@@ -36,10 +36,10 @@ MouseRateSwitcher 是一款 Windows 后台工具，通过 HID 协议与鼠标通
 
 ## 使用说明
 
-### 直接运行（已打包）
+### 直接运行（release提供打包好的exe）
 
-1. 将 `dist/MouseRateSwitcher.exe` 放到任意目录
-2. 双击运行，程序会最小化到系统托盘
+1. 将release中MouseRateSwitcher.zip解压， `MouseRateSwitcher.exe` 放到任意目录
+2. 双击运行MouseRateSwitcher.exe，程序会最小化到系统托盘
 3. 首次运行会在 exe 同目录下自动生成 `config.ini` 配置文件
 
 ### 托盘菜单
