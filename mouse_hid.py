@@ -8,25 +8,25 @@
 
 import configparser
 import os
-import subprocess
 import sys
 import threading
 import time
 import winreg
 
 import hid
+import psutil
 from winotify import Notification, audio
 from PIL import Image, ImageDraw
 import pystray
 
 # ============ 默认配置 ============
 DEFAULT_GAME_PROCESSES = [
-    "LeagueClientUx.exe",
-    "VALORANT-Win64-Shipping.exe",
-    "cs2.exe",
-    "TslGame.exe",
-    "ApexLegends.exe",
-    "Overwatch.exe",
+    "LEAGUECLIENTUX.EXE",
+    "VALORANT-WIN64-SHIPPING.EXE",
+    "CS2.EXE",
+    "TSLGAME.EXE",
+    "APEXLEGENDS.EXE",
+    "OVERWATCH.EXE",
 ]
 
 RATE_GAMING = 3    # 1000Hz
@@ -73,7 +73,7 @@ def load_config():
     # 读取游戏进程 (支持中英文逗号)
     processes = config.get("games", "processes", fallback="")
     if processes.strip():
-        GAME_PROCESS_NAMES = [p.strip() for p in processes.replace("，", ",").split(",") if p.strip()]
+        GAME_PROCESS_NAMES = [p.strip().upper() for p in processes.replace("，", ",").split(",") if p.strip()]
 
 
 def write_default_config(path):
@@ -110,6 +110,10 @@ current_state = "idle"
 monitor_thread = None
 stop_event = threading.Event()
 tray_icon = None
+_autostart_enabled = None  # 缓存自启状态，避免菜单展开时反复读注册表
+
+# 缓存托盘图标图像，避免每次状态切换时重建
+_tray_icons = {}
 
 
 # ============ 开机自启 ============
@@ -122,20 +126,27 @@ def get_exe_path():
 
 
 def is_autostart_enabled():
-    """检查是否已注册开机自启"""
+    """检查是否已注册开机自启 (带缓存)"""
+    global _autostart_enabled
+    if _autostart_enabled is not None:
+        return _autostart_enabled
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_KEY, 0, winreg.KEY_READ)
         val, _ = winreg.QueryValueEx(key, REG_NAME)
         winreg.CloseKey(key)
-        return val.lower() == get_exe_path().lower()
+        _autostart_enabled = val.lower() == get_exe_path().lower()
+        return _autostart_enabled
     except FileNotFoundError:
+        _autostart_enabled = False
         return False
     except Exception:
+        _autostart_enabled = False
         return False
 
 
 def set_autostart(enable: bool):
     """注册或取消开机自启"""
+    global _autostart_enabled
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_KEY, 0, winreg.KEY_WRITE)
         if enable:
@@ -146,6 +157,7 @@ def set_autostart(enable: bool):
             except FileNotFoundError:
                 pass
         winreg.CloseKey(key)
+        _autostart_enabled = None  # 清除缓存，下次查询时重新读取
         return True
     except Exception as e:
         print(f"[!] 自启设置失败: {e}")
@@ -154,12 +166,14 @@ def set_autostart(enable: bool):
 
 def ensure_autostart_path():
     """如果已注册自启但路径不对，自动更新"""
+    global _autostart_enabled
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_KEY, 0, winreg.KEY_READ)
         val, _ = winreg.QueryValueEx(key, REG_NAME)
         winreg.CloseKey(key)
         if val.lower() != get_exe_path().lower():
             set_autostart(True)
+            _autostart_enabled = None  # 清除缓存
     except FileNotFoundError:
         pass
     except Exception:
@@ -181,7 +195,9 @@ def notify(title: str, msg: str):
 # ============ 托盘图标 ============
 
 def create_tray_icon_image(state="idle"):
-    """创建托盘图标: 绿=闲置, 红=游戏"""
+    """创建托盘图标: 绿=闲置, 红=游戏 (带缓存)"""
+    if state in _tray_icons:
+        return _tray_icons[state]
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -189,6 +205,7 @@ def create_tray_icon_image(state="idle"):
     draw.ellipse([8, 8, 56, 56], fill=color)
     draw.ellipse([16, 16, 48, 48], fill=(255, 255, 255))
     draw.ellipse([22, 22, 42, 42], fill=color)
+    _tray_icons[state] = img
     return img
 
 
@@ -277,17 +294,14 @@ def set_report_rate(vid, pid, path, rate_index):
 # ============ 游戏进程检测 ============
 
 def is_game_running():
-    """检测是否有游戏进程在运行"""
+    """检测是否有游戏进程在运行 (使用 psutil 直接从内核读取，无需创建外部进程)"""
     try:
-        result = subprocess.run(
-            ['tasklist', '/FO', 'CSV', '/NH'],
-            capture_output=True, text=True, timeout=5,
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
-        output = result.stdout.upper()
-        for name in GAME_PROCESS_NAMES:
-            if name.upper() in output:
-                return True
+        for proc in psutil.process_iter(['name']):
+            try:
+                if proc.info['name'] and proc.info['name'].upper() in GAME_PROCESS_NAMES:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
         return False
     except Exception:
         return False
